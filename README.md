@@ -37,8 +37,8 @@ My aim is to create functional bridge scripts for both (1) live ECG-to-MIDI conv
 5. Once the output is in Ableton Live, notes will be played/parameters will be modulated according to BPM change threshold (currently: +/- 2 BPM)
 
 ### Roadmap
-- [x] Create pre-recorded bridge script that plays notes for each BPM change threshold, working for changes BOTH in increases and decreases of BPM
-- [ ] Create pre-recorded bridge script that modulates a quality (OPERATIONALISE!!!) of a note (e.g., default note could be C4, where an increase or decrease in heart rate leads to more or less gain/distortion of the tone, OR it could be that a pre-recorded piece of music is played)
+- [x] Create pre-recorded bridge script that plays notes for each BPM change threshold, working for changes BOTH for increases and decreases of BPM
+- [ ] Create pre-recorded bridge script that modulates a quality (volume, distortion, pitch) of a note (e.g., default note could be C4, where an increase or decrease in heart rate leads to more or less gain/distortion of the tone, OR it could be that a pre-recorded piece of music is played, OR the participant could just play any live music with the pre-recorded ECG modulating the timbre)
 
 ## Usage: Live ECG-to-MIDI
 
@@ -52,7 +52,7 @@ My aim is to create functional bridge scripts for both (1) live ECG-to-MIDI conv
 ## Ideas for both live and pre-recorded ECG-to-MIDI conversion
 - Change in BPM = change in pitch of note
 - Change in BPM = more or less gain/distiortion
-- Make a particularly relaxing version for biofeedback meditation session(?) - find an appropriate instrument on Ableton (e.g., ambient synth, marimba, acoustic instrument)
+- Make a particularly relaxing version for biofeedback meditation session(?) - find an appropriate instrument on Ableton (e.g., ambient synth, marimba, acoustic instrument). Look for instruments that can be arpeggiated (e.g., marimba)
 - Maybe make a paradigm focusing on HRV? Would need to be highly-sensitive to intervals between heart beats. Although, cannot really see any useful psychological applications of this idea
 
 ## Troubleshooting

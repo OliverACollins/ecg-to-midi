@@ -29,7 +29,7 @@ My aim is to create functional bridge scripts for both (1) live ECG-to-MIDI conv
 - [ ] Create live bridge script that modulates a quality (OPERATIONALISE!!!) of a note (e.g., default note could be C4, where an increase or decrease in heart rate leads to more or less gain/distortion of the tone)
 
 ### Project status
-- Bridg scripts for both live and prerecorded versions of the ECG-music interface have been created and do work, but the live script needs tweaking as seems to duplicate some R peaks
+- Bridge scripts for both live and prerecorded versions of the ECG-music interface have been created and do work, but the live script needs tweaking as seems to duplicate some R peaks
 
 ## Proposed Setup: Pre-recorded ECG-to-MIDI
 1. Locate .csv file containing (clean) ECG data

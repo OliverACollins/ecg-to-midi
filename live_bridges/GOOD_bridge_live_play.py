@@ -70,69 +70,65 @@ class MidiOut:
 # -------------------------
 # R-peak detector
 # -------------------------
-# -------------------------
-# Improved Real-Time R-Peak Detector (Pan-Tompkins-inspired)
-# -------------------------
 class RealTimeRPeakDetector:
-    def __init__(self, fs):
+    def __init__(self, fs, window_sec=6.0):
         self.fs = fs
-        self.buf = deque(maxlen=int(3 * fs))
-        self.tbuf = deque(maxlen=int(3 * fs))
+        self.window_len = int(window_sec * fs)
+        self.buffer = deque(maxlen=self.window_len)
+        self.time_buffer = deque(maxlen=self.window_len)
+        self.last_peak_time = -999.0
 
-        self.last_peak_time = -1e9
+    def add(self, sample, timestamp):
+        """
+        Add one sample. Returns:
+        (is_peak, peak_time, snr, filtered_array, peak_index)
+        """
+        self.buffer.append(float(sample))
+        self.time_buffer.append(float(timestamp))
 
-        # Adaptive threshold parameters
-        self.noise_level = 0.1
-        self.signal_level = 0.3
-        self.threshold = 0.2
-
-        # Filters
-        self.b_bpf, self.a_bpf = butter(2, [8/(fs/2), 20/(fs/2)], btype='band')
-
-    def add(self, x, t):
-        self.buf.append(x)
-        self.tbuf.append(t)
-
-        if len(self.buf) < int(0.5 * self.fs):
+        if len(self.buffer) < int(0.6 * self.window_len):
             return False, None, None, None, None
 
-        sig = np.array(self.buf)
-        ts  = np.array(self.tbuf)
+        buf = np.array(self.buffer)
+        tbuf = np.array(self.time_buffer)
 
-        # Bandpass
-        filt = filtfilt(self.b_bpf, self.a_bpf, sig)
+        # Filtering
+        try:
+            filtered = bandpass_filter(buf, self.fs)
+        except:
+            filtered = buf - np.mean(buf)
 
-        # QRS emphasis
-        squared = filt**2
-        win = int(0.15 * self.fs)
-        mwa = np.convolve(squared, np.ones(win)/win, mode='same')
+        mean = np.mean(filtered)
+        std = np.std(filtered)
+        threshold = mean + 0.9 * std
 
-        # Detect peaks (high threshold)
-        peaks, props = find_peaks(mwa, height=self.threshold, distance=int(0.3*self.fs))
+        min_distance = int(0.25 * self.fs)
+        peaks, props = find_peaks(
+            filtered,
+            height=threshold,
+            distance=min_distance,
+            prominence=0.3 * std if std > 0 else None
+        )
 
         if len(peaks) == 0:
-            # Update noise level
-            self.noise_level = 0.9*self.noise_level + 0.1*np.mean(mwa)
-            self.threshold = self.noise_level + 0.25*(self.signal_level - self.noise_level)
-            return False, None, None, mwa, None
+            return False, None, None, filtered, None
 
-        i = peaks[-1]               # newest peak
-        pt = ts[i]
+        peak_idx = peaks[-1]
+        peak_time = tbuf[peak_idx]
 
-        # Refractory (300 ms)
-        if pt - self.last_peak_time < 0.30:
-            return False, None, None, mwa, i
+        # Refractory
+        if peak_time - self.last_peak_time < REFRACTORY_PERIOD_SEC:
+            return False, None, None, filtered, peak_idx
 
-        # Update signal + threshold
-        peak_val = mwa[i]
-        self.signal_level = 0.9*self.signal_level + 0.1*peak_val
-        self.threshold = self.noise_level + 0.25*(self.signal_level - self.noise_level)
+        # Reject peaks too far in the past window
+        if peak_idx < int(0.3 * len(filtered)):
+            return False, None, None, filtered, peak_idx
 
-        self.last_peak_time = pt
-        snr = (peak_val - np.mean(mwa)) / (np.std(mwa) + 1e-9)
+        self.last_peak_time = peak_time
 
-        return True, pt, snr, mwa, i
+        snr = (filtered[peak_idx] - mean) / (std + 1e-9)
 
+        return True, peak_time, snr, filtered, peak_idx
 
 # -------------------------
 # BPM helpers

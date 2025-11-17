@@ -8,7 +8,7 @@ import os
 # -------------------------------
 # 1. Set MIDI output port to ECG_MIDI 3
 # -------------------------------
-midi_port_name = "ECG_MIDI 3"
+midi_port_name = "ECG_MIDI 1"
 
 available_ports = mido.get_output_names()
 print("Available MIDI output ports:", available_ports)

@@ -1,78 +1,74 @@
 """
-ECG -> MIDI CC113 modulation bridge.
-- Reads ECG from an LSL stream (type 'ECG')
-- Detects R-peaks in real time
-- Instead of notes, sends MIDI CC113 values modulated by peak amplitude/SNR
+ECG -> MIDI CC113 modulation bridge with LIVE PLOT.
+- Detects R-peaks from ECG LSL stream
+- Computes SNR/amplitude around each peak
+- Smooths & adaptively normalizes the modulation signal
+- Sends MIDI CC113 continuously
+- Live plot shows smoothed value and CC output
 """
 
 import argparse
 import logging
-import threading
 import time
 from collections import deque
 
 import numpy as np
+import mido
 from pylsl import resolve_streams, StreamInlet, resolve_byprop
 from scipy.signal import butter, filtfilt, find_peaks
-import mido
+import matplotlib.pyplot as plt
 
-# -------------------------
-# Configuration / Defaults
-# -------------------------
-available_ports = mido.get_output_names()
-print("Available MIDI output ports:", available_ports)
-
+# ---------------------------------------
+# CONFIG
+# ---------------------------------------
 DEFAULT_MIDI_PORT = "ECG_MIDI 1"
-MOD_CC = 113                  # <--- The only CC we will send
-SEND_INTERVAL = 0.05         # 20 Hz update rate (like EEG script)
-SMOOTH_FACTOR = 0.3          # smoothing for modulation
-ROLLING_NORM_SEC = 5.0       # adaptive min/max
+MOD_CC = 113
+
+SMOOTH_FACTOR = 0.3
+ROLLING_NORM_SEC = 5.0
+SEND_INTERVAL = 0.02          # 50 Hz update rate
 
 MIN_CC = 0
 MAX_CC = 127
-
 REFRACTORY_PERIOD_SEC = 0.25
 
+PLOT_LENGTH = 300             # sliding window for live plot
 
-# -------------------------
-# Filtering
-# -------------------------
+
+# ---------------------------------------
+# FILTERING
+# ---------------------------------------
 def bandpass_filter(signal, fs, low=5.0, high=30.0, order=2):
     nyq = 0.5 * fs
     lowcut = low / nyq
     highcut = high / nyq
-    lowcut = max(lowcut, 1e-6)
-    highcut = min(highcut, 0.999999)
     b, a = butter(order, [lowcut, highcut], btype='band')
     return filtfilt(b, a, signal)
 
 
-# -------------------------
-# MIDI Out
-# -------------------------
+# ---------------------------------------
+# MIDI
+# ---------------------------------------
 class MidiOut:
     def __init__(self, port_name):
-        try:
-            self.outport = mido.open_output(port_name)
-        except IOError:
-            raise RuntimeError(f"Could not open MIDI port '{port_name}'.")
+        self.outport = mido.open_output(port_name)
 
     def cc(self, control, value):
-        self.outport.send(mido.Message('control_change',
-                                       control=int(control),
-                                       value=int(value)))
+        self.outport.send(
+            mido.Message('control_change', control=control, value=int(value))
+        )
 
 
-# -------------------------
-# R-peak detector
-# -------------------------
+# ---------------------------------------
+# R-PEAK DETECTOR
+# ---------------------------------------
 class RealTimeRPeakDetector:
     def __init__(self, fs, window_sec=6.0):
         self.fs = fs
         self.window_len = int(window_sec * fs)
         self.buffer = deque(maxlen=self.window_len)
         self.time_buffer = deque(maxlen=self.window_len)
-        self.last_peak_time = -999.0
+        self.last_peak_time = -999
 
     def add(self, sample, timestamp):
         self.buffer.append(float(sample))
@@ -107,6 +103,7 @@ class RealTimeRPeakDetector:
         peak_idx = peaks[-1]
         peak_time = tbuf[peak_idx]
 
+        # Refractory
         if peak_time - self.last_peak_time < REFRACTORY_PERIOD_SEC:
             return False, None, None, filtered, peak_idx
 
@@ -119,43 +116,54 @@ class RealTimeRPeakDetector:
         return True, peak_time, snr, filtered, peak_idx
 
 
-# -------------------------
-# Main Loop
-# -------------------------
+# ---------------------------------------
+# MAIN LOOP
+# ---------------------------------------
 def run_bridge(args):
     logging.info("Resolving LSL ECG stream...")
 
-    streams = resolve_byprop('type', 'ECG', timeout=3.0)
+    streams = resolve_byprop('type', 'ECG', timeout=3)
     if not streams:
         all_streams = resolve_streams()
-        streams = [s for s in all_streams if 'ECG' in (s.name() or '')]
+        streams = [s for s in all_streams if "ECG" in (s.name() or "")]
 
     if not streams:
-        all_streams = resolve_streams()
-        if not all_streams:
-            raise RuntimeError("No LSL streams found.")
-        streams = [all_streams[0]]
+        raise RuntimeError("No ECG stream found.")
 
     info = streams[0]
     inlet = StreamInlet(info, max_chunklen=1024)
 
     fs = info.nominal_srate()
     if not fs or fs == 0 or np.isnan(fs):
-        timestamps = []
-        for _ in range(60):
-            s, t = inlet.pull_sample(timeout=1.0)
-            if s is not None:
-                timestamps.append(t)
-        fs = 1.0 / np.median(np.diff(timestamps)) if len(timestamps) > 2 else 250.0
+        fs = 250.0
+        logging.warning("Stream missing nominal rate; defaulting to fs=250Hz")
 
     detector = RealTimeRPeakDetector(fs)
     midi = MidiOut(args.midi_port)
 
+    # Adaptive normalization
     smoothed_value = None
-    bp_history = deque(maxlen=int(ROLLING_NORM_SEC * fs))
+    history = deque(maxlen=int(ROLLING_NORM_SEC * fs))
     last_send_time = 0
 
-    logging.info("ECG → MIDI CC113 modulation running...")
+    # ---------------------------------------
+    # LIVE PLOT SETUP
+    # ---------------------------------------
+    plt.ion()
+    fig, ax = plt.subplots()
+    line_mod, = ax.plot([], [], label="Smoothed Value")
+    line_cc, = ax.plot([], [], label="CC113 Output")
+
+    ax.set_ylim(0, 130)
+    ax.set_xlim(0, PLOT_LENGTH)
+    ax.set_xlabel("Samples")
+    ax.set_ylabel("Value")
+    ax.legend()
+
+    mod_data = []
+    cc_data = []
+
+    logging.info("ECG → MIDI CC113 modulation running... (Ctrl+C to stop)")
 
     try:
         while True:
@@ -164,14 +172,12 @@ def run_bridge(args):
                 continue
 
             x = sample[args.channel]
-
             hit, pk_time, snr, filtered, idx = detector.add(x, ts)
 
             if hit:
-                # We will use peak amplitude (or snr) as the modulation source
-                raw_value = snr if snr is not None else 0.0
+                raw_value = snr if snr else 0.0
 
-                # Smooth the extracted value
+                # Smooth
                 if smoothed_value is None:
                     smoothed_value = raw_value
                 else:
@@ -180,32 +186,56 @@ def run_bridge(args):
                         + (1 - SMOOTH_FACTOR) * smoothed_value
                     )
 
-                # Adaptive normalization
-                bp_history.append(smoothed_value)
-                vmin = min(bp_history)
-                vmax = max(bp_history)
+                # Adaptive normalize
+                history.append(smoothed_value)
+                vmin = min(history)
+                vmax = max(history)
                 norm = (smoothed_value - vmin) / max(1e-9, (vmax - vmin))
                 norm = float(np.clip(norm, 0, 1))
 
                 cc_value = int(MIN_CC + norm * (MAX_CC - MIN_CC))
 
-                # Rate-limited CC update
+                # Rate limit & send CC113
                 now = time.time()
                 if now - last_send_time >= SEND_INTERVAL:
                     midi.cc(MOD_CC, cc_value)
                     last_send_time = now
 
-                logging.info(f"R-peak → CC113={cc_value} (raw={raw_value:.3f})")
+                # -----------------------------
+                # UPDATE PLOT
+                # -----------------------------
+                mod_data.append(smoothed_value)
+                cc_data.append(cc_value)
+
+                if len(mod_data) > PLOT_LENGTH:
+                    mod_data = mod_data[-PLOT_LENGTH:]
+                    cc_data = cc_data[-PLOT_LENGTH:]
+
+                line_mod.set_ydata(mod_data)
+                line_mod.set_xdata(range(len(mod_data)))
+
+                line_cc.set_ydata(cc_data)
+                line_cc.set_xdata(range(len(cc_data)))
+
+                ax.set_xlim(0, max(PLOT_LENGTH, len(mod_data)))
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+
+                logging.info(f"Peak → CC113={cc_value} (raw={raw_value:.3f})")
+
+            time.sleep(0.001)
 
     except KeyboardInterrupt:
         logging.info("Stopping bridge...")
+        plt.ioff()
+        plt.close()
 
 
-# -------------------------
-# Args
-# -------------------------
+# ---------------------------------------
+# ARGS
+# ---------------------------------------
 def parse_args():
-    p = argparse.ArgumentParser(description="ECG → MIDI CC113 modulation bridge")
+    p = argparse.ArgumentParser(description="ECG → MIDI CC113 modulation bridge w/ live plot")
     p.add_argument("--midi-port", default=DEFAULT_MIDI_PORT)
     p.add_argument("--channel", type=int, default=0)
     p.add_argument("--verbose", action="store_true")
@@ -216,6 +246,6 @@ if __name__ == "__main__":
     args = parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s: %(message)s"
+        format="%(asctime)s [%(levelname)s] %(message)s"
     )
     run_bridge(args)
